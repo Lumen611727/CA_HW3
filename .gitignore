@@ -1,0 +1,11 @@
+build/
+bin/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.ppm
+*.png
