@@ -1,5 +1,7 @@
 # HW3 — Croc's Waterworks: 2D PIC/FLIP Fluid Simulation
 
+https://github.com/user-attachments/assets/8a9ab414-d128-439f-9f65-267a9a2919fa
+
 Your task is to complete the four core fluid-simulation functions in
 `src/fluid.cpp`.
 
