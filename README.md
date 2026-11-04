@@ -5,6 +5,11 @@ https://github.com/user-attachments/assets/8a9ab414-d128-439f-9f65-267a9a2919fa
 Your task is to complete the four core fluid-simulation functions in
 `src/fluid.cpp`.
 
+## Learning Resources
+
+- [Assignment Walkthrough Video](https://youtu.be/pv294V1l88A)
+- [Introduction Slides (PDF)](CA_HW3_Intro.pdf)
+
 ## 1. Before You Start
 
 Open `main.cpp` and replace:
