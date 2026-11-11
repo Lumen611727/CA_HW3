@@ -18,7 +18,7 @@ namespace {
 constexpr int W = 1440, H = 900;
 // TODO: replace YOUR_STUDENT_ID with your student ID, then rebuild.
 // This value appears in the operating system's window title bar.
-constexpr char STUDENT_ID[] = "YOUR_STUDENT_ID";
+constexpr char STUDENT_ID[] = "315553006";
 float brush = 28, flip = SimulationDefaults::FlipRatio, step = SimulationDefaults::TimeStep;
 float gravity = SimulationDefaults::Gravity, relaxation = SimulationDefaults::OverRelaxation;
 float stiffness = SimulationDefaults::Stiffness;

@@ -127,7 +127,12 @@ void Fluid::particleRelaxation()
     // TODO 1A: Assign each particle index to its relaxation cell.
     for (int p = 0; p < num_particles; ++p)
     {
-        // TODO
+        int col = std::floor(particle_pos[p].x() / relaxation_cell_dim);
+        int row = std::floor(particle_pos[p].y() / relaxation_cell_dim);
+        col = clampf(col, 0, relaxation_cell_cols - 1);
+        row = clampf(row, 0, relaxation_cell_rows - 1);
+
+        relaxation_cell_particle_ids[row][col].push_back(p);
     }
 
     for (int iter = 0; iter < iterations; ++iter)
@@ -138,11 +143,48 @@ void Fluid::particleRelaxation()
             {
                 // TODO 1B: Resolve overlapping particle pairs in the 3 x 3
                 // neighborhood around relaxation cell (r, c).
+                for (int p : relaxation_cell_particle_ids[r][c])
+                {
+                    for (int dr = -1; dr <= 1; ++dr)
+                    {
+                        for (int dc = -1; dc <= 1; ++dc)
+                        {
+                            int nr = r + dr;
+                            int nc = c + dc;
+                            if (nr < 0 || nr >= relaxation_cell_rows || nc < 0 || nc >= relaxation_cell_cols)
+                                continue;
+
+                            for (int q : relaxation_cell_particle_ids[nr][nc])
+                            {
+                                if (q <= p) continue;
+
+                                Eigen::Vector2f d = particle_pos[q] - particle_pos[p];
+                                float min_distance = 2 * particle_radius;
+                                float dist = d.norm();
+
+                                if (dist < min_distance && dist > EPS)
+                                {
+                                    Eigen::Vector2f correction = 0.5f * (min_distance - dist) * d.normalized();
+                                    particle_pos[p] -= correction;
+                                    particle_pos[q] += correction;
+                                }
+                                else if (dist < min_distance && dist <= EPS)
+                                {
+                                    Eigen::Vector2f fixed_dir(1.0f, 0.0f); 
+                                    Eigen::Vector2f correction = 0.5f * min_distance * fixed_dir;
+                                    particle_pos[p] -= correction;
+                                    particle_pos[q] += correction;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
         // TODO 1C: Re-resolve particle/terrain collision after the positional
         // relaxation step.
+        handleCollisions();
     }
 }
 
@@ -205,10 +247,12 @@ bool Fluid::isFaceVelocityValid(int row, int col, int component) const
     */
 
     // TODO(student): Implement the MAC-face validity test described above.
-    (void)row;
-    (void)col;
-    (void)component;
-    return false;
+    if (row < 0 || row >= cell_rows || col < 0 || col >= cell_cols) return false;
+    int nr = (component == 1) ? row - 1 : row;
+    int nc = (component == 0) ? col - 1 : col;
+    bool exist_fluid_neighbor = (nr >= 0 && nc >= 0) && cell_types[nr][nc] == CellType::FLUID;
+    bool self_fluid = cell_types[row][col] == CellType::FLUID;
+    return exist_fluid_neighbor || self_fluid;
 }
 
 void Fluid::transferVelocities(bool to_cell)
@@ -337,6 +381,9 @@ void Fluid::transferVelocities(bool to_cell)
         applyTerrainTypes();
 
         // TODO 2B: Reset all MAC-grid velocity samples to zero.
+        for (int r = 0; r < cell_rows; ++r)
+            for (int c = 0; c < cell_cols; ++c)
+                cell_velocities[r][c] = Eigen::Vector2f::Zero();
     }
 
     for (int component = 0; component < 2; ++component)
@@ -360,16 +407,74 @@ void Fluid::transferVelocities(bool to_cell)
               int sample_col[4];
               float weight[4];
             */
+            int sample_row[4];
+            int sample_col[4];
+            float weight[4];
+
+            float ox = (component == 0) ? 0.0f : 0.5f;
+            float oy = (component == 0) ? 0.5f : 0.0f;
+            float gx = particle_pos[p].x() / cell_dim - ox;
+            float gy = particle_pos[p].y() / cell_dim - oy;
+            int c0 = clampf(std::floor(gx), 0, cell_cols - 2);
+            int r0 = clampf(std::floor(gy), 0, cell_rows - 2);
+            float fx = clampf(gx - c0, 0.0f, 1.0f);
+            float fy = clampf(gy - r0, 0.0f, 1.0f);
+
+            sample_row[0] = r0;
+            sample_col[0] = c0;
+            weight[0] = (1.0f - fx) * (1.0f - fy);
+            sample_row[1] = r0;
+            sample_col[1] = c0 + 1;
+            weight[1] = fx * (1.0f - fy);
+            sample_row[2] = r0 + 1;
+            sample_col[2] = c0;
+            weight[2] = (1.0f - fx) * fy;
+            sample_row[3] = r0 + 1;
+            sample_col[3] = c0 + 1;
+            weight[3] = fx * fy;
 
             if (to_cell)
             {
                 // TODO 2D: Accumulate particle velocity and interpolation
                 // weights into the four MAC-grid samples.
+                for (int i = 0; i < 4; ++i)
+                {
+                    int r = sample_row[i];
+                    int c = sample_col[i];
+                    if (r >= 0 && r < cell_rows && c >= 0 && c < cell_cols)
+                    {
+                        cell_velocities[r][c][component] += particle_vel[p][component] * weight[i];
+                        weight_sum[r][c][component] += weight[i];
+                    }
+                }
             }
             else
             {
                 // TODO 2E: Interpolate only valid MAC-grid samples, compute
                 // PIC and FLIP velocities, then blend them using flip_ratio.
+                float pic_velocity = 0.0f;
+                float flip_velocity = 0.0f;
+                float total_weight = 0.0f;
+
+                for (int i = 0; i < 4; ++i)
+                {
+                    int r = sample_row[i];
+                    int c = sample_col[i];
+                    if (r >= 0 && r < cell_rows && c >= 0 && c < cell_cols && isFaceVelocityValid(r, c, component))
+                    {
+                        total_weight += weight[i];
+                        pic_velocity += cell_velocities[r][c][component] * weight[i];
+                        flip_velocity += (cell_velocities[r][c][component] - prev_cell_velocities[r][c][component]) * weight[i];
+                    }
+                }
+                
+                if(total_weight > 0.0f)
+                {
+                    pic_velocity /= total_weight;
+                    flip_velocity /= total_weight;
+                    flip_velocity += particle_vel[p][component];
+                    particle_vel[p][component] = (1.0f - flip_ratio) * pic_velocity + flip_ratio * flip_velocity;
+                }
             }
         }
     }
@@ -377,9 +482,19 @@ void Fluid::transferVelocities(bool to_cell)
     if (to_cell)
     {
         // TODO 2F: Normalize cell velocities by weight_sum.
-
+        for (int r = 0; r < cell_rows; ++r)
+        {
+            for (int c = 0; c < cell_cols; ++c)
+            {
+                if (weight_sum[r][c].x() > 0.0f)
+                    cell_velocities[r][c].x() /= weight_sum[r][c].x();
+                if (weight_sum[r][c].y() > 0.0f)
+                    cell_velocities[r][c].y() /= weight_sum[r][c].y();
+            }
+        }
         // TODO 2G: Save the normalized pre-projection grid velocity into
         // prev_cell_velocities for the later FLIP update.
+        prev_cell_velocities = cell_velocities;
     }
 }
 
@@ -447,12 +562,62 @@ void Fluid::updateDensity()
     {
         // TODO 3A: Compute cell-center bilinear weights and accumulate this
         // particle's contribution into the four surrounding density samples.
+        int sample_row[4];
+        int sample_col[4];
+        float weight[4];
+
+        float gx = particle_pos[p].x() / cell_dim - 0.5f;
+        float gy = particle_pos[p].y() / cell_dim - 0.5f;
+        int c0 = clampf(std::floor(gx), 0, cell_cols - 2);
+        int r0 = clampf(std::floor(gy), 0, cell_rows - 2);
+        float fx = clampf(gx - c0, 0.0f, 1.0f);
+        float fy = clampf(gy - r0, 0.0f, 1.0f);
+
+        sample_row[0] = r0;
+        sample_col[0] = c0;
+        weight[0] = (1.0f - fx) * (1.0f - fy);
+        sample_row[1] = r0;
+        sample_col[1] = c0 + 1;
+        weight[1] = fx * (1.0f - fy);
+        sample_row[2] = r0 + 1;
+        sample_col[2] = c0;
+        weight[2] = (1.0f - fx) * fy;
+        sample_row[3] = r0 + 1;
+        sample_col[3] = c0 + 1;
+        weight[3] = fx * fy;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            int r = sample_row[i];
+            int c = sample_col[i];
+            if (r >= 0 && r < cell_rows && c >= 0 && c < cell_cols && cell_types[r][c] != CellType::SOLID)
+            {
+                cell_densities[r][c] += weight[i];
+            }
+        }
     }
 
     if (particle_rest_density <= 0.0f)
     {
         // TODO 3B: Compute the average density of FLUID cells and store it in
         // particle_rest_density. This should only be initialized once.
+        float total_density = 0.0f;
+        int fluid_cell_count = 0;
+        for (int r = 0; r < cell_rows; ++r)
+        {
+            for (int c = 0; c < cell_cols; ++c)
+            {
+                if (cell_types[r][c] == CellType::FLUID)
+                {
+                    total_density += cell_densities[r][c];
+                    fluid_cell_count++;
+                }
+            }
+        }
+        if (fluid_cell_count > 0)
+        {
+            particle_rest_density = total_density / fluid_cell_count;
+        }
     }
 }
 
@@ -550,14 +715,56 @@ void Fluid::solveIncompressibility()
             {
                 // TODO 4A: Skip non-FLUID cells and count non-SOLID neighbor
                 // directions.
+                if (cell_types[r][c] != CellType::FLUID) continue;
+
+                int available_cell_count = 0;
+                for (int dr = -1; dr <= 1; ++dr)
+                {
+                    for (int dc = -1; dc <= 1; ++dc)
+                    {
+                        if (std::abs(dr) + std::abs(dc) != 1) continue;
+                        int nr = r + dr;
+                        int nc = c + dc;
+                        if (nr >= 0 && nr < cell_rows && nc >= 0 && nc < cell_cols && cell_types[nr][nc] != CellType::SOLID)
+                        {
+                            available_cell_count++;
+                        }
+                    }
+                }
 
                 // TODO 4B: Compute MAC-grid divergence.
+                float left = cell_velocities[r][c].x();
+                float right = cell_velocities[r][c + 1].x();
+                float bottom = cell_velocities[r][c].y();
+                float top = cell_velocities[r + 1][c].y();
+                float divergence = top + right - left - bottom;
 
                 // TODO 4C: Apply density correction when enabled.
+                if (density_correction && particle_rest_density > 0.0f && cell_densities[r][c] > particle_rest_density)
+                {
+                    float compression = cell_densities[r][c] - particle_rest_density;
+                    divergence -= stiffness_coefficient * compression;
+                }
 
                 // TODO 4D: Compute the over-relaxed correction magnitude.
+                float correction = 0.0f;
+                if (available_cell_count > 0)
+                {
+                    correction = over_relaxation * divergence / available_cell_count;
+                }
 
                 // TODO 4E: Apply the correction to available MAC faces.
+                if (available_cell_count > 0)
+                {
+                    if (cell_types[r][c - 1] != CellType::SOLID)
+                        cell_velocities[r][c].x() += correction;
+                    if (cell_types[r][c + 1] != CellType::SOLID)
+                        cell_velocities[r][c + 1].x() -= correction;
+                    if (cell_types[r - 1][c] != CellType::SOLID)
+                        cell_velocities[r][c].y() += correction;
+                    if (cell_types[r + 1][c] != CellType::SOLID)
+                        cell_velocities[r + 1][c].y() -= correction;
+                }
             }
         }
     }
